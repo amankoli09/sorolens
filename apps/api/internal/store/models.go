@@ -86,13 +86,31 @@ type GlobalStats struct {
 
 // AlertSubscription represents a webhook subscription for watchdog alerts.
 type AlertSubscription struct {
-	ID             string
-	ContractID     string
-	WebhookURL     string
-	SeverityFilter string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                 string
+	ContractID         string
+	WebhookURL         string
+	SeverityFilter     string
+	LastDeliveryStatus *string
+	LastDeliveryAt     *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
+
+// WebhookDelivery records a single delivery attempt or queued retry for an alert subscription.
+type WebhookDelivery struct {
+	ID             string    `json:"id"`
+	SubscriptionID string    `json:"subscription_id"`
+	Payload        string    `json:"payload"`
+	Status         string    `json:"status"` // pending | success | failed
+	Attempt        int       `json:"attempt"`
+	MaxAttempts    int       `json:"max_attempts"`
+	NextAttemptAt  time.Time `json:"next_attempt_at"`
+	ResponseCode   int       `json:"response_code,omitempty"`
+	ErrorMessage   string    `json:"error_message,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 
 // Role names for role-based access control.
 const (

@@ -48,6 +48,10 @@ type Config struct {
 	// startup. The user is keyed by this value as both its ID and GitHub ID so
 	// requests authenticated with X-User-ID or X-GitHub-ID resolve to it.
 	InitialAdminGitHubID string
+	// WebhookMaxRetries is the maximum number of webhook delivery attempts.
+	WebhookMaxRetries int
+	// WebhookBackoffSchedule specifies backoff durations between attempts.
+	WebhookBackoffSchedule []time.Duration
 }
 
 // Load reads configuration from environment variables and returns an error
@@ -85,6 +89,30 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("INDEXER_MAX_DURATION: invalid duration %q: %w", maxDurStr, err)
 	}
 	cfg.IndexerMaxDuration = maxDur
+
+	maxRetriesStr := getEnvDefault("WEBHOOK_MAX_RETRIES", "5")
+	maxRetries, err := strconv.Atoi(maxRetriesStr)
+	if err != nil {
+		return nil, fmt.Errorf("WEBHOOK_MAX_RETRIES: invalid integer %q: %w", maxRetriesStr, err)
+	}
+	cfg.WebhookMaxRetries = maxRetries
+
+	backoffStr := getEnvDefault("WEBHOOK_BACKOFF_SCHEDULE", "1m,5m,15m,1h,6h")
+	parts := strings.Split(backoffStr, ",")
+	schedule := make([]time.Duration, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		d, err := time.ParseDuration(p)
+		if err != nil {
+			return nil, fmt.Errorf("WEBHOOK_BACKOFF_SCHEDULE: invalid duration %q: %w", p, err)
+		}
+		schedule = append(schedule, d)
+	}
+	cfg.WebhookBackoffSchedule = schedule
+
 
 	var missing []string
 	if cfg.DatabaseURL == "" {

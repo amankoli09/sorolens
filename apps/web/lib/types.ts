@@ -267,6 +267,8 @@ export interface AlertSubscription {
   contract_id: string;
   webhook_url: string;
   severity_filter: string;
+  last_delivery_status?: string | null;
+  last_delivery_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -274,4 +276,26 @@ export interface AlertSubscription {
 export interface SubscriptionsResponse {
   subscriptions: AlertSubscription[];
 }
+
+export interface WebhookDelivery {
+  id: string;
+  subscription_id: string;
+  payload: string;
+  status: 'pending' | 'success' | 'failed';
+  attempt: number;
+  max_attempts: number;
+  next_attempt_at: string;
+  response_code?: number;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WebhookDeliveriesResponse {
+  deliveries: WebhookDelivery[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
 

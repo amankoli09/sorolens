@@ -10,27 +10,32 @@ import (
 	"time"
 )
 
-// AlertSubscriptionStore is the local interface for alert subscription
-// storage, kept separate from apps/api to avoid internal package imports.
+// AlertSubscriptionStore is the local interface for alert subscription storage.
 type AlertSubscriptionStore interface {
 	ListByContract(ctx context.Context, contractID string) ([]AlertSubscription, error)
+	CreateDelivery(ctx context.Context, d WebhookDelivery) error
+	UpdateDelivery(ctx context.Context, d WebhookDelivery) error
+	UpdateDeliveryStatus(ctx context.Context, subscriptionID string, status string, at time.Time) error
 }
 
 // AlertSubscription is the local mirror of the store model.
 type AlertSubscription struct {
-	ID             string
-	ContractID     string
-	WebhookURL     string
-	SeverityFilter string
+	ID                 string
+	ContractID         string
+	WebhookURL         string
+	SeverityFilter     string
+	LastDeliveryStatus *string
+	LastDeliveryAt     *time.Time
 }
 
-// DispatchAlerts queries matching subscriptions for a critical alert
-// and fires HTTP POSTs to their webhook URLs.
-// It retries once on 5xx responses, logs and skips on 4xx.
-// Each webhook request has a 10-second timeout.
+// DispatchAlerts queries matching subscriptions for an alert, creates a persistent delivery record,
+// attempts immediate delivery, and schedules retries with exponential backoff on failure.
 func DispatchAlerts(ctx context.Context, alert Alert, subStore AlertSubscriptionStore, logger *slog.Logger) {
 	if alert.Severity != "Critical" {
 		return
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	subs, err := subStore.ListByContract(ctx, alert.ContractID)
@@ -39,16 +44,23 @@ func DispatchAlerts(ctx context.Context, alert Alert, subStore AlertSubscription
 		return
 	}
 
+	cfg := LoadRetryConfig()
+	dStore, ok := subStore.(DeliveryStore)
+	var worker *RetryWorker
+	if ok {
+		worker = NewRetryWorker(dStore, logger, cfg, nil)
+	}
+
 	for _, sub := range subs {
 		if sub.SeverityFilter != "Critical" && sub.SeverityFilter != alert.Severity {
 			continue
 		}
 		go func(s AlertSubscription) {
 			payload := map[string]any{
-				"contract_id": alert.ContractID,
-				"severity":    alert.Severity,
-				"message":     alert.Message,
-				"timestamp":   alert.Timestamp.Format(time.RFC3339),
+				"contract_id":  alert.ContractID,
+				"severity":     alert.Severity,
+				"message":      alert.Message,
+				"timestamp":    alert.Timestamp.Format(time.RFC3339),
 				"explorer_url": fmt.Sprintf("https://sorobanexplorer.com/transaction/%s", alert.TxHash),
 			}
 			body, err := json.Marshal(payload)
@@ -56,34 +68,36 @@ func DispatchAlerts(ctx context.Context, alert Alert, subStore AlertSubscription
 				logger.Error("dispatch alerts: marshal payload", "err", err, "subscription_id", s.ID)
 				return
 			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.WebhookURL, bytes.NewReader(body))
-			if err != nil {
-				logger.Error("dispatch alerts: create request", "err", err, "subscription_id", s.ID)
+
+			now := time.Now().UTC()
+			deliveryID := fmt.Sprintf("del_%d", now.UnixNano())
+			delivery := WebhookDelivery{
+				ID:             deliveryID,
+				SubscriptionID: s.ID,
+				Payload:        string(body),
+				Status:         "pending",
+				Attempt:        0,
+				MaxAttempts:    cfg.MaxAttempts,
+				NextAttemptAt:  now,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			}
+
+			if err := subStore.CreateDelivery(ctx, delivery); err != nil {
+				logger.Error("dispatch alerts: create delivery record", "err", err, "subscription_id", s.ID)
+				// Even if DB creation fails, try inline dispatch
+				req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.WebhookURL, bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				client := &http.Client{Timeout: 10 * time.Second}
+				resp, rErr := client.Do(req)
+				if rErr == nil {
+					resp.Body.Close()
+				}
 				return
 			}
-			req.Header.Set("Content-Type", "application/json")
 
-			client := &http.Client{Timeout: 10 * time.Second}
-			resp, err := client.Do(req)
-			if err != nil {
-				logger.Error("dispatch alerts: request failed", "err", err, "subscription_id", s.ID)
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode >= 500 {
-				// Retry once on 5xx
-				resp2, err := client.Do(req)
-				if err != nil {
-					logger.Error("dispatch alerts: retry failed", "err", err, "subscription_id", s.ID)
-					return
-				}
-				defer resp2.Body.Close()
-				if resp2.StatusCode >= 500 {
-					logger.Error("dispatch alerts: retry also failed", "status", resp2.StatusCode, "subscription_id", s.ID)
-				}
-			} else if resp.StatusCode >= 400 {
-				logger.Error("dispatch alerts: client error", "status", resp.StatusCode, "subscription_id", s.ID)
+			if worker != nil {
+				_ = worker.ProcessSingleDelivery(ctx, delivery, s.WebhookURL)
 			}
 		}(sub)
 	}

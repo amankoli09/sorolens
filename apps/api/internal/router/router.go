@@ -96,6 +96,20 @@ func New(h *handler.Handler) http.Handler {
 		get("/watchdog/contracts/{id}", h.GetMonitoredContract)
 		get("/watchdog/contracts/{id}/health", h.ListHealthChecks)
 		get("/watchdog/contracts/{id}/alerts", h.ListWatchdogAlerts)
+
+		// Subscriptions & Webhook Deliveries
+		r.Route("/subscriptions", func(r chi.Router) {
+			r.Post("/", h.CreateSubscription)
+			r.Get("/", h.ListSubscriptions)
+			r.Delete("/{id}", h.DeleteSubscription)
+			r.Get("/{id}/deliveries", h.ListSubscriptionDeliveries)
+		})
+		r.Route("/watchdog/subscriptions", func(r chi.Router) {
+			r.Post("/", h.CreateSubscription)
+			r.Get("/", h.ListSubscriptions)
+			r.Delete("/{id}", h.DeleteSubscription)
+			r.Get("/{id}/deliveries", h.ListSubscriptionDeliveries)
+		})
 	})
 
 	return r
